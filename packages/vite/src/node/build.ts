@@ -17,7 +17,8 @@ import type {
   WatcherOptions,
   RollupWatcher,
   RollupError,
-  ModuleFormat
+  ModuleFormat,
+  InputOption
 } from 'rollup'
 import type Rollup from 'rollup'
 import { buildReporterPlugin } from './plugins/reporter'
@@ -220,10 +221,10 @@ export interface BuildOptions {
 }
 
 export interface LibraryOptions {
-  entry: string
+  entry: InputOption
   name?: string
   formats?: LibraryFormats[]
-  fileName?: string | ((format: ModuleFormat) => string)
+  fileName?: string | ((format: ModuleFormat, entryName: string) => string)
 }
 
 export type LibraryFormats = 'es' | 'cjs' | 'umd' | 'iife'
@@ -379,7 +380,16 @@ async function doBuild(
 
   const resolve = (p: string) => path.resolve(config.root, p)
   const input = libOptions
-    ? resolve(libOptions.entry)
+    ? typeof libOptions.entry === 'string'
+      ? resolve(libOptions.entry)
+      : Array.isArray(libOptions.entry)
+      ? libOptions.entry.map(resolve)
+      : Object.fromEntries(
+          Object.entries(libOptions.entry).map(([alias, file]) => [
+            alias,
+            resolve(file)
+          ])
+        )
     : typeof options.ssr === 'string'
     ? resolve(options.ssr)
     : options.rollupOptions?.input || resolve('index.html')
@@ -471,10 +481,19 @@ async function doBuild(
         entryFileNames: ssr
           ? `[name].js`
           : libOptions
-          ? resolveLibFilename(libOptions, output.format || 'es', config.root)
+          ? ({ name }) =>
+              resolveLibFilename(
+                libOptions,
+                output.format || 'es',
+                name,
+                config.root
+              )
           : path.posix.join(options.assetsDir, `[name].[hash].js`),
         chunkFileNames: libOptions
-          ? `[name].js`
+          ? ({ name }) =>
+              libOptions.fileName instanceof Function
+                ? libOptions.fileName(output.format || 'es', name)
+                : `[name].[format].js`
           : path.posix.join(options.assetsDir, `[name].[hash].js`),
         assetFileNames: libOptions
           ? `[name].[ext]`
@@ -668,13 +687,16 @@ function staticImportedByEntry(
 export function resolveLibFilename(
   libOptions: LibraryOptions,
   format: ModuleFormat,
+  entryName: string,
   root: string
 ): string {
   if (typeof libOptions.fileName === 'function') {
-    return libOptions.fileName(format)
+    return libOptions.fileName(format, entryName)
   }
 
-  const name = libOptions.fileName || getPkgName(root)
+  const name =
+    libOptions.fileName ||
+    (typeof libOptions.entry === 'string' ? getPkgName(root) : entryName)
 
   if (!name)
     throw new Error(
