@@ -713,14 +713,22 @@ function resolveBuildOutputs(
 ): OutputOptions | OutputOptions[] | undefined {
   if (libOptions) {
     const formats = libOptions.formats || ['es', 'umd']
-    if (
-      (formats.includes('umd') || formats.includes('iife')) &&
-      !libOptions.name
-    ) {
-      throw new Error(
-        `Option "build.lib.name" is required when output formats ` +
-          `include "umd" or "iife".`
-      )
+    if (formats.includes('umd') || formats.includes('iife')) {
+      if (
+        typeof libOptions.entry !== 'string' &&
+        Object.values(libOptions.entry).length > 1
+      ) {
+        throw new Error(
+          `Multiple entry points are not supported when output formats include "umd" or "iife".`
+        )
+      }
+
+      if (!libOptions.name) {
+        throw new Error(
+          `Option "build.lib.name" is required when output formats ` +
+            `include "umd" or "iife".`
+        )
+      }
     }
     if (!outputs) {
       return formats.map((format) => ({ format }))
