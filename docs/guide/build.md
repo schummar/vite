@@ -109,6 +109,7 @@ const { defineConfig } = require('vite')
 module.exports = defineConfig({
   build: {
     lib: {
+      // Could also be a dictionary or array of multiple entry points
       entry: path.resolve(__dirname, 'lib/main.js'),
       name: 'MyLib',
       fileName: (format) => `my-lib.${format}.js`
@@ -150,6 +151,27 @@ Recommended `package.json` for your lib:
     ".": {
       "import": "./dist/my-lib.es.js",
       "require": "./dist/my-lib.umd.js"
+    }
+  }
+}
+```
+
+Or, if exposing multiple entry points:
+
+```json
+{
+  "name": "my-lib",
+  "files": ["dist"],
+  "main": "./dist/my-lib.umd.js",
+  "module": "./dist/my-lib.es.js",
+  "exports": {
+    ".": {
+      "import": "./dist/my-lib.es.js",
+      "require": "./dist/my-lib.umd.js"
+    },
+    "./secondary": {
+      "import": "./dist/secondary.es.js",
+      "require": "./dist/secondary.umd.js"
     }
   }
 }
