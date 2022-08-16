@@ -445,56 +445,58 @@ async function doBuild(
   }
 
   try {
-    const buildOutputOptions = (output: OutputOptions = {}): OutputOptions => {
-      // See https://github.com/vitejs/vite/issues/5812#issuecomment-984345618
-      // @ts-ignore
-      if (output.output) {
-        config.logger.warn(
-          `You've set "rollupOptions.output.output" in your config. ` +
-            `This is deprecated and will override all Vite.js default output options. ` +
-            `Please use "rollupOptions.output" instead.`
-        )
-      }
+    const buildOutputOptions =
+      (input: InputOption | undefined) =>
+      (output: OutputOptions = {}): OutputOptions => {
+        // See https://github.com/vitejs/vite/issues/5812#issuecomment-984345618
+        // @ts-ignore
+        if (output.output) {
+          config.logger.warn(
+            `You've set "rollupOptions.output.output" in your config. ` +
+              `This is deprecated and will override all Vite.js default output options. ` +
+              `Please use "rollupOptions.output" instead.`
+          )
+        }
 
-      const ssrNodeBuild = ssr && config.ssr.target === 'node'
-      const ssrWorkerBuild = ssr && config.ssr.target === 'webworker'
-      const cjsSsrBuild = ssr && config.ssr.format === 'cjs'
+        const ssrNodeBuild = ssr && config.ssr.target === 'node'
+        const ssrWorkerBuild = ssr && config.ssr.target === 'webworker'
+        const cjsSsrBuild = ssr && config.ssr.format === 'cjs'
 
-      const format = output.format || (cjsSsrBuild ? 'cjs' : 'es')
-      const jsExt =
-        ssrNodeBuild || libOptions
-          ? resolveOutputJsExtension(format, getPkgJson(config.root)?.type)
-          : 'js'
-      return {
-        dir: outDir,
-        // Default format is 'es' for regular and for SSR builds
-        format,
-        exports: cjsSsrBuild ? 'named' : 'auto',
-        sourcemap: options.sourcemap,
-        name: libOptions ? libOptions.name : undefined,
-        // es2015 enables `generatedCode.symbols`
-        // - #764 add `Symbol.toStringTag` when build es module into cjs chunk
-        // - #1048 add `Symbol.toStringTag` for module default export
-        generatedCode: 'es2015',
-        entryFileNames: ssr
-          ? `[name].${jsExt}`
-          : libOptions
-          ? ({ name }) =>
-              resolveLibFilename(libOptions, format, name, config.root, jsExt)
-          : path.posix.join(options.assetsDir, `[name].[hash].${jsExt}`),
-        chunkFileNames: libOptions
-          ? `[name].[hash].${jsExt}`
-          : path.posix.join(options.assetsDir, `[name].[hash].${jsExt}`),
-        assetFileNames: libOptions
-          ? `[name].[ext]`
-          : path.posix.join(options.assetsDir, `[name].[hash].[ext]`),
-        inlineDynamicImports:
-          output.format === 'umd' ||
-          output.format === 'iife' ||
-          (ssrWorkerBuild && typeof input === 'string'),
-        ...output
+        const format = output.format || (cjsSsrBuild ? 'cjs' : 'es')
+        const jsExt =
+          ssrNodeBuild || libOptions
+            ? resolveOutputJsExtension(format, getPkgJson(config.root)?.type)
+            : 'js'
+        return {
+          dir: outDir,
+          // Default format is 'es' for regular and for SSR builds
+          format,
+          exports: cjsSsrBuild ? 'named' : 'auto',
+          sourcemap: options.sourcemap,
+          name: libOptions ? resolveLibName(libOptions, input) : undefined,
+          // es2015 enables `generatedCode.symbols`
+          // - #764 add `Symbol.toStringTag` when build es module into cjs chunk
+          // - #1048 add `Symbol.toStringTag` for module default export
+          generatedCode: 'es2015',
+          entryFileNames: ssr
+            ? `[name].${jsExt}`
+            : libOptions
+            ? ({ name }) =>
+                resolveLibFilename(libOptions, format, name, config.root, jsExt)
+            : path.posix.join(options.assetsDir, `[name].[hash].${jsExt}`),
+          chunkFileNames: libOptions
+            ? `[name].[hash].${jsExt}`
+            : path.posix.join(options.assetsDir, `[name].[hash].${jsExt}`),
+          assetFileNames: libOptions
+            ? `[name].[ext]`
+            : path.posix.join(options.assetsDir, `[name].[hash].[ext]`),
+          inlineDynamicImports:
+            output.format === 'umd' ||
+            output.format === 'iife' ||
+            (ssrWorkerBuild && typeof input === 'string'),
+          ...output
+        }
       }
-    }
 
     // resolve lib mode outputs
     const outputs = resolveBuildOutputs(
@@ -503,32 +505,75 @@ async function doBuild(
       config.logger
     )
 
+    // For umd and iife formats, one separate build per entrypoint is needed
+    // because rollup doesn't support code splitting builds for them
+    // https://github.com/rollup/rollup/issues/2072
+    const builds: {
+      rollupOptions: RollupOptions
+      outputs: OutputOptions[]
+    }[] = []
+
+    const outputsWithCodeSplitting = outputs?.filter(
+      (output) => output.format !== 'umd' && output.format !== 'iife'
+    )
+
+    // One build for all formats with code splitting
+    if (outputsWithCodeSplitting?.length) {
+      builds.push({
+        rollupOptions,
+        outputs: outputsWithCodeSplitting.map(
+          buildOutputOptions(rollupOptions.input)
+        )
+      })
+    }
+
+    const outputsWithoutCodeSplitting = outputs?.filter(
+      (output) => output.format === 'umd' || output.format === 'iife'
+    )
+
+    // One build per entry point for formats without code splitting
+    if (outputsWithoutCodeSplitting?.length) {
+      const separatedInputs: (InputOption | undefined)[] =
+        typeof rollupOptions.input === 'string'
+          ? [rollupOptions.input]
+          : Array.isArray(rollupOptions.input)
+          ? rollupOptions.input
+          : rollupOptions.input
+          ? [...Object.entries(rollupOptions.input)].map(([key, value]) => ({
+              [key]: value
+            }))
+          : [undefined]
+
+      builds.push(
+        ...separatedInputs.map((input) => ({
+          rollupOptions: {
+            ...rollupOptions,
+            input
+          },
+          outputs: outputsWithoutCodeSplitting.map(buildOutputOptions(input))
+        }))
+      )
+    }
+
     // watch file changes with rollup
     if (config.build.watch) {
       config.logger.info(colors.cyan(`\nwatching for file changes...`))
-
-      const output: OutputOptions[] = []
-      if (Array.isArray(outputs)) {
-        for (const resolvedOutput of outputs) {
-          output.push(buildOutputOptions(resolvedOutput))
-        }
-      } else {
-        output.push(buildOutputOptions(outputs))
-      }
 
       const resolvedChokidarOptions = resolveChokidarOptions(
         config.build.watch.chokidar
       )
 
       const { watch } = await import('rollup')
-      const watcher = watch({
-        ...rollupOptions,
-        output,
-        watch: {
-          ...config.build.watch,
-          chokidar: resolvedChokidarOptions
-        }
-      })
+      const watcher = watch(
+        builds.map(({ rollupOptions, outputs }) => ({
+          ...rollupOptions,
+          output: outputs,
+          watch: {
+            ...config.build.watch,
+            chokidar: resolvedChokidarOptions
+          }
+        }))
+      )
 
       watcher.on('event', (event) => {
         if (event.code === 'BUNDLE_START') {
@@ -549,28 +594,27 @@ async function doBuild(
 
     // write or generate files with rollup
     const { rollup } = await import('rollup')
-    const bundle = await rollup(rollupOptions)
-    parallelBuilds.push(bundle)
-
-    const generate = (output: OutputOptions = {}) => {
-      return bundle[options.write ? 'write' : 'generate'](
-        buildOutputOptions(output)
-      )
-    }
 
     if (options.write) {
       prepareOutDir(outDir, options.emptyOutDir, config)
     }
 
-    if (Array.isArray(outputs)) {
-      const res = []
+    const res: RollupOutput[] = []
+
+    for (const { rollupOptions, outputs } of builds) {
+      const bundle = await rollup(rollupOptions)
+      parallelBuilds.push(bundle)
+
+      const generate = (output: OutputOptions = {}) => {
+        return bundle[options.write ? 'write' : 'generate'](output)
+      }
+
       for (const output of outputs) {
         res.push(await generate(output))
       }
-      return res
-    } else {
-      return await generate(outputs)
     }
+
+    return res
   } catch (e) {
     outputBuildError(e)
     throw e
@@ -626,6 +670,23 @@ function resolveOutputJsExtension(
   }
 }
 
+export function resolveLibName(
+  libOptions: LibraryOptions,
+  input: InputOption | undefined
+): string | undefined {
+  if (libOptions.name !== undefined) {
+    return libOptions.name
+  }
+
+  if (
+    !Array.isArray(input) &&
+    input instanceof Object &&
+    Object.keys(input).length === 1
+  ) {
+    return Object.keys(input)[0]
+  }
+}
+
 export function resolveLibFilename(
   libOptions: LibraryOptions,
   format: ModuleFormat,
@@ -662,22 +723,18 @@ function resolveBuildOutputs(
   outputs: OutputOptions | OutputOptions[] | undefined,
   libOptions: LibraryOptions | false,
   logger: Logger
-): OutputOptions | OutputOptions[] | undefined {
+): OutputOptions[] | undefined {
   if (libOptions) {
     const formats = libOptions.formats || ['es', 'umd']
     if (formats.includes('umd') || formats.includes('iife')) {
       if (
-        typeof libOptions.entry !== 'string' &&
-        Object.values(libOptions.entry).length > 1
+        !libOptions.name &&
+        !(
+          !Array.isArray(libOptions.entry) && libOptions.entry instanceof Object
+        )
       ) {
         throw new Error(
-          `Multiple entry points are not supported when output formats include "umd" or "iife".`
-        )
-      }
-
-      if (!libOptions.name) {
-        throw new Error(
-          `Option "build.lib.name" is required when output formats ` +
+          `Option "build.lib.name" or defining entry as a dictionary is required when output formats ` +
             `include "umd" or "iife".`
         )
       }
@@ -696,7 +753,7 @@ function resolveBuildOutputs(
       )
     }
   }
-  return outputs
+  return outputs && !Array.isArray(outputs) ? [outputs] : outputs
 }
 
 const warningIgnoreList = [`CIRCULAR_DEPENDENCY`, `THIS_IS_UNDEFINED`]
